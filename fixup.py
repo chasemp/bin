@@ -12,15 +12,6 @@ def replaceAll(file,searchExp,replaceExp):
             line = line.replace(searchExp,replaceExp)
         sys.stdout.write(line)
 
-def rename_host(newhostname):
-    cmd = '/bin/hostname %s' % (newhostname)
-    pipe = subprocess.Popen(cmd, shell=True, stdout = subprocess.PIPE,stderr = subprocess.PIPE )
-    (out, error) = pipe.communicate()
-    pipe.wait()
-    if error:
-        raise CustomException(error)
-    return out
-
 def get_files(exp):
     cmd = 'grep -ilR %s *' % (exp)
     pipe = subprocess.Popen(cmd, shell=True, stdout = subprocess.PIPE,stderr = subprocess.PIPE )
