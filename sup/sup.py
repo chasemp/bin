@@ -9,6 +9,7 @@ import socket
 import json
 import inspect
 from ping import Ping
+import thread
 try:
     import Tkinter, tkMessageBox
     gui = True
@@ -39,24 +40,76 @@ class Timer:
         self.end = time.clock()
         self.interval = self.end - self.start
 
+def ftimeout(func, args=(), kwargs={}, timeout_duration=1, default=None):
+    """http://stackoverflow.com/a/13821695"""
+    import signal
+
+    class TimeoutError(Exception):
+        pass
+
+    def handler(signum, frame):
+        raise TimeoutError()
+
+    # set the timeout handler
+    signal.signal(signal.SIGALRM, handler) 
+    signal.alarm(timeout_duration)
+    try:
+        result = func(*args, **kwargs)
+        to = False
+    except TimeoutError as exc:
+        to = True
+        result = default
+    finally:
+        signal.alarm(0)
+
+    return result, to
+
 
 class supped(object):
 
-    def __init__(self, ip, port):
+    def __init__(self, ip, port, timeout):
         self.ip = ip
         self.port = port
+        self.timeout = timeout
         self.v = False
         self.vv = False
+        self.v_out = None
+        self.vv_out = None
 
     def run(self):
         with Timer() as t:
-            result = self.poll()
-        #millis = int(round(t.interval * 1000))
-        #print millis
-        return result, '%.05f' % t.interval
+            result, to = ftimeout(self.poll, timeout_duration=self.timeout)
+        if to:
+            result = 'timeout'
+        ms = t.interval * 1000
+        return result,  ms
 
     def poll(self):
         raise NotImplementedError("Subclasses should implement this!")
+
+
+class sup_ntp(supped):
+
+    def poll(self):
+        self.port = self.port if self.port else 123
+        # File: Ntpclient.py
+        #http://stackoverflow.com/questions/12664295/ntp-client-in-python
+        from socket import AF_INET, SOCK_DGRAM
+        import sys
+        import socket
+        import struct, time
+        from time import ctime
+        buf = 1024
+        print self.ip, self.port
+        address = (self.ip, self.port)
+        msg = '\x1b' + 47 * '\0'
+        TIME1970 = 2208988800L # 1970-01-01 00:00:00
+        client = socket.socket( AF_INET, SOCK_DGRAM)
+        client.sendto(msg, address)
+        msg, address = client.recvfrom( buf )
+        t = struct.unpack( "!12I", msg)[10]
+        t -= TIME1970
+        return t
 
 
 class sup_http(supped):
@@ -80,7 +133,7 @@ class sup_http(supped):
                     else:
                         self.vv_out += 'Message details:\n'
                         for output in str(v).splitlines():
-                            self.v_out += '        %s\n' % output
+                            self.vv_out += '        %s\n' % output
             return status
         except socket.error:
             return None
@@ -126,6 +179,26 @@ class sup_redis(supped):
         except socket.error:
             return None
 
+class sup_memcached(supped):
+
+    def poll(self):
+        import telnetlib
+        self.port = self.port if self.port else 11211
+        mark = 'accepting_conns 1'
+        try:
+            tn = telnetlib.Telnet(self.ip, self.port)
+            tn.read_very_eager()
+            tn.write("stats\r\n")
+            tn.write("quit\r\n")
+            data =  tn.read_all()
+            if mark in data:
+                status = 'ok'
+            else:
+                status = 'failed'
+            return status
+        except socket.error:
+            return None
+
 class sup_tcping(supped):
 
     def poll(self):
@@ -146,7 +219,7 @@ class sup_tcping(supped):
 
 
 
-class sup_ping(supped):
+class sup_icmp(supped):
 
     def poll(self):
         import socket
@@ -155,8 +228,9 @@ class sup_ping(supped):
             return p.do()
         except socket.error:
             print 'need superuser priviledges'
-            
-class sup_tcping(supped):
+
+
+class sup_tcp(supped):
 
     def poll(self):
         self.port = self.port if self.port else 22
@@ -191,16 +265,16 @@ def main():
     parser.add_argument("-b", help="broadcast messages",  action="store_true")
     parser.add_argument("-v", help="verbose",  action="store_true")
     parser.add_argument("-vv", help="very verbose",  action="store_true")
-    parser.add_argument("-t", help="use tcp only",  action="store_true")
-    parser.add_argument('-s', action='store', dest='seconds',
+    parser.add_argument("-t", action='store', dest='timeout', default=1, help='main timeout')
+    parser.add_argument('-i', action='store', dest='interval',
                     default=2,
-                    help='seconds between polls',
+                    help='interval between polls',
                     )
 
     parser.add_argument('-m', action='store', dest='mode',
                     default='tcping',
-                    help='check type to use',
-                    )
+                    help='Check type to use.  \nAvailable: %s\n' %
+                    '\r\n'.join([m.split('_')[1] for m in sup_dict.keys() if m.startswith('sup_')]))
 
     def helpdie(msg=None):
         if msg:
@@ -220,9 +294,9 @@ def main():
     else:
         port = 0
 
-    if args.seconds:
+    if args.interval:
         try:
-            seconds = int(args.seconds)
+            interval = int(args.interval)
         except Exception, e:
             helpdie(str(e))
 
@@ -239,46 +313,64 @@ def main():
         print args
 
     attempt = 0
-    status = ''
+    state = ''
     mode = "sup_%s" % args.mode
     if mode in sup_dict:
         suping = sup_dict[mode]
-        s = suping(site, port)
+        s = suping(site, port, int(args.timeout))
         s.name = mode
         s.v = args.v
         s.vv = args.vv
     else:
         helpdie()
 
-    if args.v or args.vv:
-        print "Looking for %s on %s" % (mode, s.port)
-    while 1:
-        attempt += 1
-        now = datetime.datetime.now()
-        lstatus = status or ''
-        status = s.run()
-        if args.vv:
-            print s.v_out
-            sys.stdout.write('>>> ')
+    #Listen for user signals while 
+    #polling
+    def input_thread(L):
+        raw_input()
+        L.append(None)
+    L = []
+    thread.start_new_thread(input_thread, (L,))
 
+    begin = time.time()
+    poll_durations = []
+    if args.v or args.vv:
+        print "Polling %s on port %s every %s seconds\n" % (mode, s.port, args.interval)
+    while 1:
+        if L:
+            print 'avg: %s Max: %s Min: %s' % (sum(poll_durations)/len(poll_durations),
+                                               max(poll_durations),
+                                               min(poll_durations))
+            print '%s polled %s times in %s seconds' % (args.mode, attempt, round(time.time() - begin))
+            break
+
+        attempt += 1
+        localtime   = time.localtime()
+        now  = time.strftime("%I.%M.%S", localtime)
+        lstate = state or ''
+        state, howlong = s.run()
+        poll_durations.append(howlong)
+        if args.vv and s.vv_out is not None:
+            print s.vv_out
+            sys.stdout.write('>>> ')
         host = s.ip
         if s.port:
             host += ':%s' % s.port
-        msg = '%s %s %s %s' %  (now, host, status, attempt)
-
-        if status and lstatus and status != lstatus:
+        msg = '%s %s %s %s ms' %  (now, host, state, howlong)
+        if s.v or s.vv:
+            msg += ' %s' % attempt
+        if state and lstate and state != lstate:
             if args.b:
                 broadcast_msg(msg)
             if args.p:
                 popup(msg)
-        elif status and not lstatus:
+        elif state and not lstate:
             if args.v:
                 print 'unknown last state'
-
         print msg
         if args.v or args.vv:
             print '---------------------------------------------------'
-        time.sleep(seconds)
+        time.sleep(interval)
 
 if __name__ == '__main__':
     try:
