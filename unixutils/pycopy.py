@@ -1,3 +1,4 @@
+#pycopy to avoid bad 'copy' imports for various tools
 import sys
 import shutil
 
