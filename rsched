@@ -1,5 +1,5 @@
 #!/bin/bash
-
+#http://rush898.github.io/2013/07/10/nix-lights-out-failsafe/
 if [ -z "$1" ]
   then
     echo "Usage: $0 <minutes_until_reboot>"
