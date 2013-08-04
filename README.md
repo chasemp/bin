@@ -3,9 +3,7 @@ bin
 
 small scripts and snippets
 
-NOT necessarily written by me
-
-If there is no attributed author then it was probably written by me.
+If there is no attributed author then it was written by me.
 ________________________________________________
 
 
