@@ -1,0 +1,1 @@
+/Users/cpettet/settings/bin/prompt.sh

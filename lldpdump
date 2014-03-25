@@ -1,0 +1,23 @@
+#!/bin/bash
+
+tmp=`mktemp -u /tmp/%s.XXXX`
+
+cleanup ()
+  {
+    kill -s SIGTERM $! &> /dev/null
+    exit 0
+  }
+
+trap cleanup SIGINT SIGTERM
+
+while true
+do
+    tcpdump -v -s 1500 -c 1 '(ether[12:2]=0x88cc or ether[20:2]=0x2000)' &> $tmp
+    cat $tmp | grep -E 'System Name TLV(.*)' | awk '{print $7}'
+    cat $tmp | grep -E 'Port Description TLV' | awk '{print $7}'
+    cat $tmp | grep -E 'vlan id (VID):' | awk '{print $4}'
+    cat $tmp | grep -E 'vlan name' | awk '{print $3}'
+    printf '%0.1s' "-"{1..60}; echo ""
+    sleep 1 &
+    wait $!
+done
